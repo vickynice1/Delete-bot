@@ -1,4 +1,5 @@
 import os
+import re
 from telegram import Update
 from telegram.ext import (
     Application,
@@ -16,11 +17,25 @@ GROUP_ID = -1002139907201
 flagged_words = set()
 banned_words = set()
 
-# /flag <word>
-async def flag_word(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# /start command (only works in group by admin)
+async def start_bot(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Only trigger inside the correct group
     if update.effective_chat.id != GROUP_ID:
         return
+    # Only reply to admin
     if update.effective_user.id != ADMIN_ID:
+        return
+    
+    await update.message.reply_text(
+        "👋 Hello Admin, I'm enabled.\n"
+        "✅ Use /flag <word> to flag a word.\n"
+        "🚫 Use /ban <word> to ban a word.\n"
+        "🔗 I will also delete links automatically (except from you)."
+    )
+
+# /flag <word>
+async def flag_word(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_chat.id != GROUP_ID or update.effective_user.id != ADMIN_ID:
         return
     
     if not context.args:
@@ -33,9 +48,7 @@ async def flag_word(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # /ban <word>
 async def ban_word(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_chat.id != GROUP_ID:
-        return
-    if update.effective_user.id != ADMIN_ID:
+    if update.effective_chat.id != GROUP_ID or update.effective_user.id != ADMIN_ID:
         return
     
     if not context.args:
@@ -46,14 +59,27 @@ async def ban_word(update: Update, context: ContextTypes.DEFAULT_TYPE):
     banned_words.add(word)
     await update.message.reply_text(f"🚫 Banned word added: {word}")
 
-# Delete flagged/banned messages
+# Delete flagged/banned messages + links
 async def check_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.id != GROUP_ID:
         return
     if not update.message or not update.message.text:
         return
     
+    user_id = update.effective_user.id
     text = update.message.text.lower()
+
+    # Check for links (block except for admin)
+    if re.search(r"(https?://|t\.me/|www\.)", text):
+        if user_id != ADMIN_ID:  # allow admin to send links
+            try:
+                await update.message.delete()
+                print("🗑 Deleted a link message")
+                return
+            except Exception as e:
+                print(f"❌ Failed to delete link: {e}")
+
+    # Check for flagged/banned words
     for word in flagged_words.union(banned_words):
         if word in text:
             try:
@@ -71,9 +97,12 @@ def main():
 
     app = Application.builder().token(token).build()
 
-    # Handlers
+    # Commands
+    app.add_handler(CommandHandler("start", start_bot))
     app.add_handler(CommandHandler("flag", flag_word))
     app.add_handler(CommandHandler("ban", ban_word))
+
+    # Messages
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, check_messages))
 
     print("🤖 Bot is running...")
