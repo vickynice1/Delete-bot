@@ -25,6 +25,12 @@ class MessageDeleterBot:
     def __init__(self):
         self.application = Application.builder().token(BOT_TOKEN).build()
         self.setup_handlers()
+        # Add error handler
+        self.application.add_error_handler(self.error_handler)
+    
+    async def error_handler(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle errors"""
+        logger.error(f"Exception while handling an update: {context.error}")
     
     def setup_handlers(self):
         """Setup command and message handlers"""
@@ -75,8 +81,10 @@ class MessageDeleterBot:
         if not await self.is_admin(update, context):
             return  # Don't reply if not admin
         
-        welcome_message = """
-🤖 **Hello Admin! Message Deleter Bot is now enabled!**
+        # Fix the string formatting issue
+        link_status = "ON" if auto_delete_links else "OFF"
+        
+        welcome_message = f"""🤖 **Hello Admin! Message Deleter Bot is now enabled!**
 
 **Available Commands:**
 • `/flag <word>` - Add word to flag list (auto-delete)
@@ -88,15 +96,11 @@ class MessageDeleterBot:
 • `/help` - Show this help message
 
 **Current Status:**
-• Flagged words: {flagged_count}
-• Banned words: {banned_count}
-• Link deletion: {'ON' if auto_delete_links else 'OFF'}
+• Flagged words: {len(flagged_words)}
+• Banned words: {len(banned_words)}
+• Link deletion: {link_status}
 
-Send me flagged or banned words to start protecting your group! 🛡️
-        """.format(
-            flagged_count=len(flagged_words),
-            banned_count=len(banned_words)
-        )
+Send me flagged or banned words to start protecting your group! 🛡️"""
         
         await update.message.reply_text(welcome_message, parse_mode='Markdown')
     
@@ -186,7 +190,8 @@ Send me flagged or banned words to start protecting your group! 🛡️
         else:
             message += "🚫 **Banned Words:** None\n"
         
-        message += f"\n🔗 **Link Deletion:** {'ON' if auto_delete_links else 'OFF'}"
+        link_status = "ON" if auto_delete_links else "OFF"
+        message += f"\n🔗 **Link Deletion:** {link_status}"
         
         await update.message.reply_text(message, parse_mode='Markdown')
     
@@ -218,8 +223,7 @@ Send me flagged or banned words to start protecting your group! 🛡️
         if not await self.is_admin(update, context):
             return  # Don't reply if not admin
         
-        help_text = """
-🤖 **Message Deleter Bot Help**
+        help_text = """🤖 **Message Deleter Bot Help**
 
 **Commands:**
 • `/start` - Initialize bot and show status
@@ -242,55 +246,72 @@ Send me flagged or banned words to start protecting your group! 🛡️
 • Only admins can control the bot
 • Works only when bot has admin privileges
 
-**Note:** Bot must be admin in the group to delete messages!
-        """
+**Note:** Bot must be admin in the group to delete messages!"""
         
         await update.message.reply_text(help_text, parse_mode='Markdown')
     
     async def monitor_messages(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Monitor messages for flagged/banned words and links"""
-        # Skip if bot is not admin
-        if not await self.is_bot_admin(update, context):
-            return
-        
-        # Skip admin messages
-        if await self.is_admin(update, context):
-            return
-        
-        message_text = update.message.text.lower()
-        should_delete = False
-        reason = ""
-        
-        # Check for flagged words
-        for word in flagged_words:
-            if word in message_text:
-                should_delete = True
-                reason = f"flagged word: '{word}'"
-                break
-        
-        # Check for banned words
-        if not should_delete:
-            for word in banned_words:
+        try:
+            # Skip if no message text
+            if not update.message or not update.message.text:
+                return
+            
+            # Skip if bot is not admin
+            if not await self.is_bot_admin(update, context):
+                return
+            
+            # Skip admin messages
+            if await self.is_admin(update, context):
+                return
+            
+            message_text = update.message.text.lower()
+            should_delete = False
+            reason = ""
+            
+            # Check for flagged words
+            for word in flagged_words:
                 if word in message_text:
                     should_delete = True
-                    reason = f"banned word: '{word}'"
+                    reason = f"flagged word: '{word}'"
                     break
-        
-        # Check for links if enabled
-        if not should_delete and auto_delete_links:
-            # Regex pattern for URLs
-            url_pattern = r'http[s]?://(?:[a-zA-Z]|[0-9]|[$-_@.&+]|[!*\\(\\),]|(?:%[0-9a-fA-F][0-9a-fA-F]))+'
-            if re.search(url_pattern, update.message.text):
-                should_delete = True
-                reason = "contains link"
-        
-        # Delete message if needed
-        if should_delete:
-            try:
-                await update.message.delete()
-                logger.info(f"Deleted message from {update.effective_user.username} - {reason}")
-            except Exception as e:
-                logger.error(f"Failed to delete message: {e}")
+            
+            # Check for banned words
+            if not should_delete:
+                for word in banned_words:
+                    if word in message_text:
+                        should_delete = True
+                        reason = f"banned word: '{word}'"
+                        break
+            
+            # Check for links if enabled
+            if not should_delete and auto_delete_links:
+                # Enhanced regex pattern for URLs and common link formats
+                url_patterns = [
+                    r'http[s]?://(?:[a-zA-Z]|[0-9]|[$-_@.&+]|[!*\\(\\),]|(?:%[0-9a-fA-F][0-9a-fA-F]))+',
+                    r'www\.(?:[a-zA-Z]|[0-9]|[$-_@.&+]|[!*\\(\\),]|(?:%[0-9a-fA-F][0-9a-fA-F]))+',
+                    r'(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}',
+                    r't\.me/\w+',
+                    r'@\w+\.\w+'
+                ]
+                
+                for pattern in url_patterns:
+                    if re.search(pattern, update.message.text, re.IGNORECASE):
+                        should_delete = True
+                        reason = "contains link"
+                        break
+            
+            # Delete message if needed
+            if should_delete:
+                try:
+                    await update.message.delete()
+                    username = update.effective_user.username or update.effective_user.first_name or "Unknown"
+                    logger.info(f"Deleted message from {username} - {reason}")
+                except Exception as e:
+                    logger.error(f"Failed to delete message: {e}")
+                    
+        except Exception as e:
+            logger.error(f"Error in monitor_messages: {e}")
     
     def run(self):
         """Start the bot"""
